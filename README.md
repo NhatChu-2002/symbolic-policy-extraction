@@ -1,4 +1,4 @@
-POMDP Policy to PDDL (Work in Progress)
+### POMDP Policy to PDDL (Work in Progress)
 
 This repository contains experimental code for generating classical PDDL models from policies produced by Julia POMDP solvers.
 
