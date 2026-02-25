@@ -1,0 +1,7 @@
+python tools/autogen_tiger_pddl.py \
+  --template policy_template/tiger_domain_template.pddl \
+  --csv pomdp/tiger_policy.csv \
+  --autogen-root policy_pddl_autogen \
+  --problem-name tiger \
+  --tiger left \
+  --copy-csv

@@ -1,168 +1,178 @@
-
 from __future__ import annotations
+
 import argparse
+import csv
+import re
 import shutil
-import sys
-from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 
-@dataclass
-class Step:
-    k: int = 6
-    action: str   # listen|left|right
-    obs: str      # left|right
-    pleft: Optional[float] = None
-    pright: Optional[float] = None
+def read_listen_sequence(csv_path: Path, trace_id: Optional[int] = None) -> List[str]:
+    """
+    Returns sequence like ["left", "right", ...] from rows:
+      TRACE,<id>,listen,<left|right>,...
+    If trace_id is None, concatenates across all TRACE ids in file order.
+    """
+    seq: List[str] = []
+    with csv_path.open("r", newline="") as f:
+        reader = csv.reader(f)
+        for row in reader:
+            if not row or len(row) < 4:
+                continue
+            if row[0].strip() != "TRACE":
+                continue
+
+            try:
+                tid = int(row[1].strip())
+            except ValueError:
+                continue
+
+            action = row[2].strip().lower()
+            sym = row[3].strip().lower()
+
+            if trace_id is not None and tid != trace_id:
+                continue
+
+            if action == "listen":
+                if sym not in ("left", "right"):
+                    raise ValueError(f"Unexpected listen symbol '{sym}' in row: {row}")
+                seq.append(sym)
+
+    if not seq:
+        raise ValueError(f"No listen rows found in {csv_path} (trace_id={trace_id}).")
+    return seq
 
 
-def parse_trace(text: str) -> List[Step]:
-    
-    steps: List[Step] = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line.startswith("TRACE,"):
-            continue
-        parts = [p.strip() for p in line.split(",")]
-        if len(parts) < 4:
-            continue
-        
-        k = int(parts[1])
-        action = parts[2].lower()
-        obs = parts[3].lower()
-        pleft = float(parts[4]) if len(parts) > 4 else None
-        pright = float(parts[5]) if len(parts) > 5 else None
-        steps.append(Step(k=k, action=action, obs=obs, pleft=pleft, pright=pright))
+def build_tape(seq: List[str]) -> Tuple[List[str], List[Tuple[str, str]], List[str]]:
 
-    if not steps:
-        raise ValueError("No TRACE lines found.")
-    return steps
+    n = len(seq)
+    tape_objs = [f"t{i}" for i in range(n)]
+    next_links = [(f"t{i}", f"t{i+1}") for i in range(n - 1)]
+    obs_facts = [(f"(obs-left t{i})" if sym == "left" else f"(obs-right t{i})") for i, sym in enumerate(seq)]
+    return tape_objs, next_links, obs_facts
+
+
+def next_index(autogen_dir: Path) -> int:
+
+    autogen_dir.mkdir(parents=True, exist_ok=True)
+    pattern = re.compile(r"policy_domain_(\d+)\.pddl$")
+    nums = []
+    for p in autogen_dir.glob("policy_domain_*.pddl"):
+        m = pattern.search(p.name)
+        if m:
+            nums.append(int(m.group(1)))
+    return (max(nums) + 1) if nums else 1
 
 
 def write_problem(
-    out_problem: Path,
-    steps: List[Step],
-    problem_name: str = "tiger-policy-run",
-    use_uppercase_nodes: bool = True,
+    out_path: Path,
+    tape_objs: List[str],
+    next_links: List[Tuple[str, str]],
+    obs_facts: List[str],
+    tiger_side: str,
+    goal_confirm: bool,
 ) -> None:
-    
-    if use_uppercase_nodes:
-        nodes = ["B0", "BL1", "BL2", "BL3", "BR1", "BR2", "BR3"]
-    else:
-        nodes = ["b0", "bl1", "bl2", "bl3", "br1", "br2", "br3"]
+   
+    if tiger_side not in ("left", "right", "none"):
+        raise ValueError("tiger_side must be left|right|none")
 
-    T = len(steps)
-    tapes = [f"t{i}" for i in range(T)]
+    node_line = "b0 bl1 bl2 bl3 br1 br2 br3 - node"
+    tape_line = " ".join(tape_objs) + " - tape"
 
-    # next chain
-    next_facts = []
-    for i in range(T - 1):
-        next_facts.append(f"(next t{i} t{i+1})")
+    init_lines = [
+        "(at b0)",
+        "(k0)",
+        "(tape-at t0)",
+    ]
+    if tiger_side == "left":
+        init_lines.append("(tiger-left)")
+    elif tiger_side == "right":
+        init_lines.append("(tiger-right)")
 
-    # obs facts
-    obs_facts = []
-    for i, st in enumerate(steps):
-        if st.obs == "left":
-            obs_facts.append(f"(obs-left t{i})")
-        elif st.obs == "right":
-            obs_facts.append(f"(obs-right t{i})")
-        else:
-            raise ValueError(f"Unknown obs '{st.obs}' at step {i}")
-
-    consumed_facts = []
-    for i, st in enumerate(steps):
-        if st.action != "listen":
-            consumed_facts.append(f"(consumed t{i})")
-
-    # objects
-    node_objs = " ".join(nodes) + " - node"
-    tape_objs = " ".join(tapes) + " - tape"
-
-    init_lines = []
-    init_lines.append(f"(at {nodes[0]})")  # B0 or b0
-    init_lines.append("(k0)")
-    init_lines.append("(b-unk)")
-    init_lines.append("(tape-at t0)")
-    init_lines += next_facts
+    init_lines += [f"(next {a} {b})" for a, b in next_links]
     init_lines += obs_facts
-    init_lines += consumed_facts
 
-    problem = f"""(define (problem {problem_name})
+    goal = "(and (done) (tiger-confirmed))" if goal_confirm else "(done)"
+
+    text = f"""(define (problem tiger-policy-run)
   (:domain tiger-policy-fsc)
 
   (:objects
-    {node_objs}
-    {tape_objs}
+    {node_line}
+    {tape_line}
   )
 
   (:init
-    ;; controller start
-    {init_lines[0]}
-
-    ;; counter start
-    {init_lines[1]}
-
-    ;; belief start
-    {init_lines[2]}
-
-    ;; tape head
-    {init_lines[3]}
-
-    ;; tape successor chain
-    {" ".join(next_facts)}
-
-    ;; observations 
-    {" ".join(obs_facts)}
-
-    ;; mark open steps as already consumed 
-    {" ".join(consumed_facts)}
+    {'\n    '.join(init_lines)}
   )
 
-  (:goal (done))
+  (:goal {goal})
 )
 """
-    out_problem.write_text(problem, encoding="utf-8")
+    out_path.write_text(text)
 
 
-def main() -> int:
+def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("trace", help="Trace input file, or '-' for stdin")
-    ap.add_argument("--domain-template", required=True, help="Path to your fixed domain template PDDL")
-    ap.add_argument("--out-domain", required=True, help="Output domain file path")
-    ap.add_argument("--out-problem", required=True, help="Output problem file path")
-    ap.add_argument("--problem-name", default="tiger-policy-run")
-    ap.add_argument("--lowercase-nodes", action="store_true", help="Use b0/bl1/... instead of B0/BL1/...")
+    ap.add_argument("--template", required=True, type=Path,
+                    help="Path to tiger domain template PDDL (actions are stored here).")
+    ap.add_argument("--csv", required=True, type=Path,
+                    help="Path to Julia CSV trace file.")
+    ap.add_argument("--autogen-root", required=True, type=Path,
+                    help="Root autogen folder, e.g. policy_exprm_autogen")
+    ap.add_argument("--problem-name", default="tiger", help="Subfolder under autogen-root (default: tiger)")
+    ap.add_argument("--trace-id", type=int, default=None, help="Compile only one TRACE id (optional).")
+    ap.add_argument("--tiger", choices=["left", "right", "none"], default="left",
+                    help="Which tiger fact to put in init (avoid oneof).")
+    ap.add_argument("--no-confirm", action="store_true",
+                    help="If set, goal is (done) instead of (and (done) (tiger-confirmed)).")
+    ap.add_argument("--copy-csv", action="store_true",
+                    help="If set, copy the input CSV into the autogen/tiger folder as trace.csv")
     args = ap.parse_args()
 
-    
-    if args.trace == "-":
-        text = sys.stdin.read()
-    else:
-        text = Path(args.trace).read_text(encoding="utf-8")
+    template_path: Path = args.template
+    csv_path: Path = args.csv
 
-    steps = parse_trace(text)
+    if not template_path.exists():
+        raise FileNotFoundError(template_path)
+    if not csv_path.exists():
+        raise FileNotFoundError(csv_path)
 
-    dom_src = Path(args.domain_template)
-    dom_dst = Path(args.out_domain)
-    dom_dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(dom_src, dom_dst)
+    out_dir = args.autogen_root / args.problem_name
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Write problem
-    prob_dst = Path(args.out_problem)
-    prob_dst.parent.mkdir(parents=True, exist_ok=True)
+    idx = next_index(out_dir)
+
+    # 1) Domain: copy template to policy_domain_<idx>.pddl
+    domain_out = out_dir / f"policy_domain_{idx}.pddl"
+    shutil.copyfile(template_path, domain_out)
+
+    # 2) Problem: compile tape from csv listens
+    seq = read_listen_sequence(csv_path, trace_id=args.trace_id)
+    tape_objs, next_links, obs_facts = build_tape(seq)
+
+    problem_out = out_dir / f"policy_problem_{idx}.pddl"
     write_problem(
-        prob_dst,
-        steps,
-        problem_name=args.problem_name,
-        use_uppercase_nodes=(not args.lowercase_nodes),
+        out_path=problem_out,
+        tape_objs=tape_objs,
+        next_links=next_links,
+        obs_facts=obs_facts,
+        tiger_side=args.tiger,
+        goal_confirm=(not args.no_confirm),
     )
 
-    print(f"Wrote domain : {dom_dst}")
-    print(f"Wrote problem: {prob_dst}")
-    print(f"Tape length  : {len(steps)} (one cell per TRACE line)")
-    return 0
+    if args.copy_csv:
+        shutil.copyfile(csv_path, out_dir / "trace.csv")
+
+    print(f"[OK] wrote: {domain_out}")
+    print(f"[OK] wrote: {problem_out}")
+    print(f"[OK] tape length (listen rows): {len(seq)}")
+    if args.trace_id is not None:
+        print(f"[OK] used TRACE id: {args.trace_id}")
+    if args.copy_csv:
+        print(f"[OK] copied csv -> {out_dir / 'trace.csv'}")
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

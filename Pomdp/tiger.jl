@@ -1,3 +1,6 @@
+# import Pkg
+# Pkg.add(["POMDPTools", "QuickPOMDPs", "POMDPs", "QMDP"])
+# Pkg.instantiate()
 using POMDPs
 using QuickPOMDPs
 using POMDPTools: Uniform, SparseCat, Deterministic, stepthrough
@@ -93,10 +96,10 @@ function run_sim(m, policy; max_steps=50, io=stdout)
     return rsum
 end
 
-# ---------------------------
-# MAIN: write trace to a file
-# ---------------------------
-trace_path = length(ARGS) >= 1 ? ARGS[1] : "trace.csv"
+
+default_trace_path = joinpath(@__DIR__, "tiger_policy.csv")
+
+trace_path = length(ARGS) >= 1 ? ARGS[1] : default_trace_path
 max_steps = length(ARGS) >= 2 ? parse(Int, ARGS[2]) : 50
 
 rsum = 0.0

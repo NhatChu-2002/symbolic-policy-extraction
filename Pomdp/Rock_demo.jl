@@ -1,3 +1,5 @@
+import Pkg;
+Pkg.add(["RockSample", "NativeSARSOP"]);
 using POMDPs, POMDPTools
 using RockSample, NativeSARSOP
 using Printf
@@ -35,15 +37,14 @@ function agent_xy(s)
     return pos[1], pos[2]
 end
 
-# --- write TRACE lines to a CSV file ---
-out_path = "./Pomdp/trace.csv"
+out_path = "./Pomdp/rock_policy.csv"
 open(out_path, "w") do io
     n = length(pomdp.rocks_positions)
-    print(io, "TRACE,t,x,y,a,o")
-    for i in 1:n
-        print(io, ",p_good_$i")
-    end
-    println(io)
+    # print(io, "TRACE,t,x,y,a,o")
+    # for i in 1:n
+    #     print(io, ",p_good_$i")
+    # end
+    # println(io)
 
     t = 0
     for (b, s, a, o, r) in stepthrough(pomdp, policy, up, "b,s,a,o,r"; max_steps=30)
