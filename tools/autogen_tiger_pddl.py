@@ -9,11 +9,7 @@ from typing import List, Optional, Tuple
 
 
 def read_listen_sequence(csv_path: Path, trace_id: Optional[int] = None) -> List[str]:
-    """
-    Returns sequence like ["left", "right", ...] from rows:
-      TRACE,<id>,listen,<left|right>,...
-    If trace_id is None, concatenates across all TRACE ids in file order.
-    """
+    
     seq: List[str] = []
     with csv_path.open("r", newline="") as f:
         reader = csv.reader(f)
@@ -45,16 +41,17 @@ def read_listen_sequence(csv_path: Path, trace_id: Optional[int] = None) -> List
 
 
 def build_tape(seq: List[str]) -> Tuple[List[str], List[Tuple[str, str]], List[str]]:
-
     n = len(seq)
     tape_objs = [f"t{i}" for i in range(n)]
     next_links = [(f"t{i}", f"t{i+1}") for i in range(n - 1)]
-    obs_facts = [(f"(obs-left t{i})" if sym == "left" else f"(obs-right t{i})") for i, sym in enumerate(seq)]
+    obs_facts = [
+        (f"(obs-left t{i})" if sym == "left" else f"(obs-right t{i})")
+        for i, sym in enumerate(seq)
+    ]
     return tape_objs, next_links, obs_facts
 
 
 def next_index(autogen_dir: Path) -> int:
-
     autogen_dir.mkdir(parents=True, exist_ok=True)
     pattern = re.compile(r"policy_domain_(\d+)\.pddl$")
     nums = []
@@ -70,25 +67,24 @@ def write_problem(
     tape_objs: List[str],
     next_links: List[Tuple[str, str]],
     obs_facts: List[str],
-    tiger_side: str,
+    use_tags: bool,
     goal_confirm: bool,
 ) -> None:
-   
-    if tiger_side not in ("left", "right", "none"):
-        raise ValueError("tiger_side must be left|right|none")
 
     node_line = "b0 bl1 bl2 bl3 br1 br2 br3 - node"
     tape_line = " ".join(tape_objs) + " - tape"
 
+    obj_lines = [node_line, tape_line]
     init_lines = [
         "(at b0)",
         "(k0)",
         "(tape-at t0)",
     ]
-    if tiger_side == "left":
-        init_lines.append("(tiger-left)")
-    elif tiger_side == "right":
-        init_lines.append("(tiger-right)")
+
+    if use_tags:
+        obj_lines.append("tagL tagR - tag")
+        init_lines.append("(tiger-left tagL)")
+        init_lines.append("(tiger-right tagR)")
 
     init_lines += [f"(next {a} {b})" for a, b in next_links]
     init_lines += obs_facts
@@ -99,8 +95,7 @@ def write_problem(
   (:domain tiger-policy-fsc)
 
   (:objects
-    {node_line}
-    {tape_line}
+    {'\n    '.join(obj_lines)}
   )
 
   (:init
@@ -121,10 +116,14 @@ def main() -> None:
                     help="Path to Julia CSV trace file.")
     ap.add_argument("--autogen-root", required=True, type=Path,
                     help="Root autogen folder, e.g. policy_exprm_autogen")
-    ap.add_argument("--problem-name", default="tiger", help="Subfolder under autogen-root (default: tiger)")
-    ap.add_argument("--trace-id", type=int, default=None, help="Compile only one TRACE id (optional).")
-    ap.add_argument("--tiger", choices=["left", "right", "none"], default="left",
-                    help="Which tiger fact to put in init (avoid oneof).")
+    ap.add_argument("--problem-name", default="tiger",
+                    help="Subfolder under autogen-root (default: tiger)")
+    ap.add_argument("--trace-id", type=int, default=None,
+                    help="Compile only one TRACE id (optional).")
+
+    ap.add_argument("--tags", action="store_true",
+                    help="If set, include tagL/tagR objects and (tiger-left tagL)/(tiger-right tagR) in init.")
+
     ap.add_argument("--no-confirm", action="store_true",
                     help="If set, goal is (done) instead of (and (done) (tiger-confirmed)).")
     ap.add_argument("--copy-csv", action="store_true",
@@ -144,11 +143,9 @@ def main() -> None:
 
     idx = next_index(out_dir)
 
-    # 1) Domain: copy template to policy_domain_<idx>.pddl
     domain_out = out_dir / f"policy_domain_{idx}.pddl"
     shutil.copyfile(template_path, domain_out)
 
-    # 2) Problem: compile tape from csv listens
     seq = read_listen_sequence(csv_path, trace_id=args.trace_id)
     tape_objs, next_links, obs_facts = build_tape(seq)
 
@@ -158,7 +155,7 @@ def main() -> None:
         tape_objs=tape_objs,
         next_links=next_links,
         obs_facts=obs_facts,
-        tiger_side=args.tiger,
+        use_tags=args.tags,
         goal_confirm=(not args.no_confirm),
     )
 
@@ -170,6 +167,8 @@ def main() -> None:
     print(f"[OK] tape length (listen rows): {len(seq)}")
     if args.trace_id is not None:
         print(f"[OK] used TRACE id: {args.trace_id}")
+    if args.tags:
+        print("[OK] included tagL/tagR and tagged tiger facts in init")
     if args.copy_csv:
         print(f"[OK] copied csv -> {out_dir / 'trace.csv'}")
 

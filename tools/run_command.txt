@@ -1,7 +1,10 @@
-python tools/autogen_tiger_pddl.py \
-  --template policy_template/tiger_domain_template.pddl \
-  --csv pomdp/tiger_policy.csv \
+
+
+  python tools/autogen_tiger_pddl.py --template policy_template/tiger_domain_template.pddl --csv pomdp/tiger_policy.csv --autogen-root policy_pddl_autogen --tags
+
+  python tools/autogen_rock_pddl.py \
+  --template policy_template/rock_sample_domain_template.pddl \
+  --csv pomdp/rock_policy.csv \
   --autogen-root policy_pddl_autogen \
-  --problem-name tiger \
-  --tiger left \
+  --subdir rock_sample \
   --copy-csv
